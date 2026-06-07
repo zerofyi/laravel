@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Http;
+use Exception;
 
 class PushHostinger extends BasePushCommand
 {
@@ -22,59 +23,71 @@ class PushHostinger extends BasePushCommand
         $this->info('🚀 Initializing Complete Hostinger Pipeline Execution...');
         $this->line('');
 
-        // Phase 1: Validate Environment configurations
-        $env = $this->validateLocalEnvironment(true);
-        if (!$env) {
-            return Command::FAILURE;
-        }
+        try {
+            // Phase 1: Parse and Validate environment parameter states
+            $env = $this->validateLocalEnvironment(true);
+            if (!$env) {
+                return Command::FAILURE;
+            }
 
-        // Phase 2: Compile Local Assets (Built exactly ONCE here)
-        if (!$this->compileFrontendAssetsLocally()) {
-            return Command::FAILURE;
-        }
+            // Phase 2: Compile Frontend Assets Locally (Built exactly ONCE)
+            if (!$this->compileFrontendAssetsLocally()) {
+                return Command::FAILURE;
+            }
 
-        // Phase 3: Synchronize with Local GitHub wizard via Sub-Command calling
-        $this->info('🔄 Routing tasks into local Git setup wizard...');
-        $gitWizardCode = $this->call('push:github', [
-            '--dry-run' => $isDryRun,
-            '--skip-assets' => true,
-            '--debug' => $this->option('debug'),
-        ]);
+            // Phase 3: Route Sub-Wizard task loops to manage Git configurations
+            $this->info('🔄 Routing tasks into local Git setup wizard...');
+            $gitWizardCode = $this->call('push:github', [
+                '--dry-run' => $isDryRun,
+                '--skip-assets' => true,
+                '--debug' => $this->option('debug'),
+            ]);
 
-        if ($gitWizardCode !== 0) {
-            $this->error('❌ Deployment aborted. Core structural codebase syncing failed.');
-            return Command::FAILURE;
-        }
+            if ($gitWizardCode !== 0) {
+                $this->error('❌ Deployment aborted. Core structural codebase syncing failed.');
+                return Command::FAILURE;
+            }
 
-        // Phase 4: Local-to-Server SSH Handshake & Path Check
-        $this->info('🔑 Initializing connection sequence with remote Hostinger node...');
-        $absolutePath = "/home/{$env['ssh_user']}/domains/{$env['site_dir']}";
+            // Phase 4: Local-to-Server SSH Verification handshake
+            $this->info('🔑 Initializing connection sequence with remote Hostinger node...');
 
-        $sshBase = sprintf(
-            'ssh -p %d -o StrictHostKeyChecking=accept-new -o BatchMode=yes %s@%s',
-            $env['ssh_port'],
-            $env['ssh_user'],
-            $env['ssh_host']
-        );
+            // Build absolute path targets with programmatic string sanitation guards
+            $userClean = trim($env['ssh_user']);
+            $dirClean = trim($env['site_dir']);
+            $absolutePath = "/home/{$userClean}/domains/{$dirClean}";
 
-        // Run validation check to see if target folder profile exists on the remote host
-        $pathCheckCmd = "{$sshBase} " . escapeshellarg("test -d '{$absolutePath}' && echo 'exists' || echo 'missing'");
-        $pathCheck = Process::run($pathCheckCmd);
+            $sshBase = sprintf(
+                'ssh -p %d -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=15 %s@%s',
+                $env['ssh_port'],
+                $userClean,
+                trim($env['ssh_host'])
+            );
 
-        if (!$pathCheck->successful() || trim($pathCheck->output()) !== 'exists') {
-            $this->error("❌ Error: Target deployment directory [{$absolutePath}] does not exist on your Hostinger server.");
-            $this->line('💡 Please map and set up this domain directory correctly within your Hostinger control panel first.');
-            return Command::FAILURE;
-        }
-        $this->info('✅ Production target directory path verified.');
+            // Execute an explicit directory check to guarantee deployment targets exist
+            $pathCheckCmd = "{$sshBase} " . escapeshellarg("test -d '{$absolutePath}' && echo 'exists' || echo 'missing'");
+            $pathCheck = Process::run($pathCheckCmd);
 
-        // Phase 5: Server-to-GitHub Identity Checking & Exchange
-        if (!$this->resolveServerToGitHubTrust($env['repo_url'], $sshBase, $isDryRun)) {
-            return Command::FAILURE;
-        }
+            if (!$pathCheck->successful() || trim($pathCheck->output()) !== 'exists') {
+                $this->line('');
+                $this->error("❌ Error: Target deployment directory [{$absolutePath}] does not exist on your Hostinger server.");
+                $this->line('💡 Please map and set up this domain directory correctly within your Hostinger control panel first.');
+                return Command::FAILURE;
+            }
+            $this->info('✅ Production target directory path verified.');
 
-        // Phase 6: Code Syncing & Production Pipeline Optimization
-        if (!$this->executeRemoteDeployment($env, $sshBase, $absolutePath, $isDryRun)) {
+            // Phase 5: Server-to-GitHub Trust Verification Engine
+            if (!$this->resolveServerToGitHubTrust($env['repo_url'], $sshBase, $isDryRun)) {
+                return Command::FAILURE;
+            }
+
+            // Phase 6: Code Syncing & Production Pipeline Optimization Execution
+            if (!$this->executeRemoteDeployment($env, $sshBase, $absolutePath, $isDryRun)) {
+                return Command::FAILURE;
+            }
+
+        } catch (Exception $e) {
+            $this->line('');
+            $this->error('❌ Fatal unhandled exception terminated the deployment pipeline: ' . $e->getMessage());
             return Command::FAILURE;
         }
 
@@ -85,26 +98,25 @@ class PushHostinger extends BasePushCommand
 
     private function resolveServerToGitHubTrust(string $repoUrl, string $sshBase, bool $isDryRun): bool
     {
-        // Extract Git provider hostname pattern cleanly
         $host = '';
         if (preg_match('/@([^:]+):/', $repoUrl, $matches)) {
             $host = $matches[1];
         } elseif (preg_match('/https?:\/\/([^\/]+)/', $repoUrl, $matches)) {
             $host = $matches[1];
         }
-        $host = $host ?: 'github.com';
+        $host = trim($host ?: 'github.com');
 
         if ($isDryRun) {
             $this->info('[DRY RUN] Skip trust layer evaluation.');
             return true;
         }
 
-        // 1. Conditionally add domain profile straight into hostinger known_hosts profile
+        // 1. Force feed hostname signatures safely into remote known_hosts mapping
         $this->info("🔍 Synchronizing host keys matching destination domain signature: {$host}");
         $scanCmd = "{$sshBase} " . escapeshellarg("mkdir -p ~/.ssh && chmod 700 ~/.ssh && if ! grep -q '{$host}' ~/.ssh/known_hosts 2>/dev/null; then ssh-keyscan -H '{$host}' >> ~/.ssh/known_hosts 2>/dev/null; fi");
         Process::run($scanCmd);
 
-        // 2. Programmatically verify visibility profile using local test invocation
+        // 2. Intercept repository configuration profile context visibility variables
         $this->info('🔍 Resolving repository accessibility profile context...');
         $visibilityCheck = Process::run('git ls-remote -h ' . escapeshellarg($repoUrl));
 
@@ -115,7 +127,7 @@ class PushHostinger extends BasePushCommand
 
         $this->warn('🔒 Private repository detected. Managing deployment keys on the server...');
 
-        // 3. Check for existing server keys or generate an unpassphrased profile dynamically
+        // 3. Resolve key file locations on Hostinger or generate fallback profiles dynamically
         $keyCheckCmd = "{$sshBase} " . escapeshellarg("test -f ~/.ssh/id_ed25519 && echo 'exists' || (test -f ~/.ssh/id_rsa && echo 'rsa_exists' || echo 'missing')");
         $keyCheck = trim(Process::run($keyCheckCmd)->output());
 
@@ -128,7 +140,6 @@ class PushHostinger extends BasePushCommand
             $keyPath = '~/.ssh/id_rsa';
         }
 
-        // Fetch public key footprint output string directly from the host filesystem
         $getPubCmd = "{$sshBase} " . escapeshellarg("cat {$keyPath}.pub");
         $publicKey = trim(Process::run($getPubCmd)->output());
 
@@ -137,34 +148,38 @@ class PushHostinger extends BasePushCommand
             return false;
         }
 
-        // 4. Register Deployment Key onto GitHub automatically via token, or provide a manual alternative
+        // 4. Inject public key data string directly into GitHub Repository configurations if a token is readily present
         $token = env('GITHUB_API_TOKEN');
         if (!empty($token)) {
             $this->info('🤖 GITHUB_API_TOKEN found. Attempting automatic Deploy Key injection...');
 
             if (preg_match('/[:\/]([^\/]+)\/([^\/\.]+)/', $repoUrl, $repoMatches)) {
-                $owner = $repoMatches[1];
-                $repoName = $repoMatches[2];
+                $owner = trim($repoMatches[1]);
+                $repoName = trim($repoMatches[2], '.git ');
 
                 $apiUrl = "https://api.github.com/repos/{$owner}/{$repoName}/keys";
-                $response = Http::withHeaders([
-                    'Accept' => 'application/vnd.github.v3+json',
-                    'Authorization' => "Bearer {$token}",
-                ])->post($apiUrl, [
-                    'title' => 'Hostinger Server Deployment Key (v0.1 Auto-Generated)',
-                    'key' => $publicKey,
-                    'read_only' => true
-                ]);
+                try {
+                    $response = Http::timeout(15)->withHeaders([
+                        'Accept' => 'application/vnd.github.v3+json',
+                        'Authorization' => "Bearer {$token}",
+                    ])->post($apiUrl, [
+                        'title' => 'Hostinger Server Deployment Key (Auto-Generated)',
+                        'key' => $publicKey,
+                        'read_only' => true
+                    ]);
 
-                if ($response->successful() || $response->status() === 422) {
-                    $this->info('✅ Remote security trust chain verified (Deploy key active).');
-                    return true;
+                    if ($response->successful() || $response->status() === 422) {
+                        $this->info('✅ Remote security trust chain verified (Deploy key active).');
+                        return true;
+                    }
+                } catch (Exception $e) {
+                    $this->warn('⚠️  Automated token API registration handshake timed out.');
                 }
-                $this->warn('⚠️  Automated token authentication registration failed. Reverting to manual layout.');
+                $this->warn('⚠️  Automated authentication registration failed. Reverting to manual fallback mode.');
             }
         }
 
-        // Manual validation fallback box
+        // Interactive manual key exchange console card layout
         $this->line('');
         $this->warn('📋 Action Required: Please append this server public key to your repository Deploy Keys:');
         $this->line("   👉 Navigate to: GitHub Repository → Settings → Deploy keys");
@@ -186,7 +201,7 @@ class PushHostinger extends BasePushCommand
             return true;
         }
 
-        // 1. Synchronize Codebase via Git
+        // 1. Synchronize application codebase layout via Git updates
         $this->info('🔄 Synchronizing codebase versions on server target...');
         $repoStatusCmd = "{$sshBase} " . escapeshellarg("test -d '{$absolutePath}/.git' && echo 'pull' || echo 'clone'");
         $repoStatus = trim(Process::run($repoStatusCmd)->output());
@@ -208,15 +223,15 @@ class PushHostinger extends BasePushCommand
         }
         $this->info('   ↳ Codebase successfully synced.');
 
-        // 2. Synchronize Frontend Bundles via Windows-Safe Compressed Tar Pipeline
+        // 2. Synchronize frontend bundle directories via compressed Tarball streams over SSH
         if (is_dir(base_path('public/build'))) {
             $this->info('📤 Delivering compiled frontend bundles via compressed stream pipeline...');
             $remoteBuildPath = "{$absolutePath}/public/build";
 
-            // Wipe old asset directories first to avoid folder layouts locking out transfers
+            // Wipe old workspace structures to avoid file locking bugs
             Process::run("{$sshBase} " . escapeshellarg("rm -rf '{$remoteBuildPath}' && mkdir -p '{$absolutePath}/public'"));
 
-            // Stream compressed archive directly inside standard terminal inputs to defeat Windows dup() socket bugs
+            // Stream compressed binary pack data straight through standard terminal interface lines
             $tarCmd = sprintf(
                 'tar -czf - -C ./public build | %s "tar -xzf - -C %s"',
                 $sshBase,
@@ -235,7 +250,7 @@ class PushHostinger extends BasePushCommand
             $this->info('   ↳ Frontend assets synchronized successfully.');
         }
 
-        // 3. Server Optimization Pipeline Execution (Strict Failure Loop / Circuit-Breaker Mode)
+        // 3. Complete remote Laravel deployment optimization framework (Strict Circuit-Breaker Loop)
         $this->info('⚙️  Running production optimization pipeline over SSH...');
 
         $remoteCommands = [
@@ -244,7 +259,7 @@ class PushHostinger extends BasePushCommand
             "Setup Environment Config"      => "cd '{$absolutePath}' && if [ -f .env ]; then echo '👉 INFO: .env file already exists on Hostinger. Skipping creation safely.'; else if [ -f .env.example ]; then cp .env.example .env && php artisan key:generate --quiet && echo '✅ SUCCESS: Created fresh .env from .env.example'; else echo '⚠️ WARNING: .env.example is missing! Could not auto-generate .env'; fi; fi",
             "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
             "Setup Storage Link"           => "cd '{$absolutePath}' && if [ ! -L public/storage ] && [ ! -d public/storage ]; then php artisan storage:link; fi",
-            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ -d public_html ] && [ ! -L public_html ]; then mv public_html public_html_backup_$(date +%F); fi; rm -f public_html; ln -s public public_html",
+            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ -d public_html ] && [ ! -L public_html ]; then mv public_html public_html_backup_$(date +%F); fi; rm -f public_html; ln -sfn public public_html",
             "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
             "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
         ];
