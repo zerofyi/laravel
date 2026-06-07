@@ -143,8 +143,8 @@ class PushHostinger extends BasePushCommand
         if ($keyCheck === 'missing') {
             $this->info('🔑 Key files absent on host server. Generating fresh unpassphrased RSA 4096-bit key pair...');
 
-            // FIX: Uses standard -t rsa -b 4096 which Hostinger shared servers fully accept without prompt blocks
-            $genCmd = "{$sshBase} " . escapeshellarg('mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t rsa -b 4096 -N "" -f ~/.ssh/id_rsa');
+            // FIX: Using single-quoted -P '' fixes Hostinger's "Too many arguments" parsing bug
+            $genCmd = "{$sshBase} " . escapeshellarg("mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t rsa -b 4096 -P '' -f ~/.ssh/id_rsa");
             $genProcess = Process::run($genCmd);
 
             if (!$genProcess->successful()) {
