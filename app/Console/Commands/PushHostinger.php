@@ -241,7 +241,7 @@ class PushHostinger extends BasePushCommand
         $remoteCommands = [
             "Ensure App Directory Context" => "cd '{$absolutePath}'",
             "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
-            "Setup Environment Config"      => "cd '{$absolutePath}' && if [ ! -f .env ]; then if [ -f .env.example ]; then cp .env.example .env && php artisan key:generate --quiet && echo 'Created fresh .env from .env.example'; else echo '⚠️ Warning: .env.example missing! Could not auto-generate .env'; fi; else echo '.env already exists'; fi",
+            "Setup Environment Config"      => "cd '{$absolutePath}' && if [ -f .env ]; then echo '👉 INFO: .env file already exists on Hostinger. Skipping creation safely.'; else if [ -f .env.example ]; then cp .env.example .env && php artisan key:generate --quiet && echo '✅ SUCCESS: Created fresh .env from .env.example'; else echo '⚠️ WARNING: .env.example is missing! Could not auto-generate .env'; fi; fi",
             "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
             "Setup Storage Link"           => "cd '{$absolutePath}' && if [ ! -L public/storage ] && [ ! -d public/storage ]; then php artisan storage:link; fi",
             "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ -d public_html ] && [ ! -L public_html ]; then mv public_html public_html_backup_$(date +%F); fi; rm -f public_html; ln -s public public_html",
