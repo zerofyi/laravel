@@ -12,7 +12,7 @@ class PushHostinger extends BasePushCommand
                             {--dry-run : Simulate deployment pipelines without editing server files}
                             {--debug   : Print comprehensive network and command execution outputs}';
 
-    protected $description = 'Pushes updates to GitHub, builds local assets, and completes a manual deployment to Hostinger.';
+    protected $description = 'Pushes updates to GitHub, builds local assets, and completes a manual deployment to Hostinger via optimized tar stream.';
 
     public function handle(): int
     {
@@ -28,7 +28,7 @@ class PushHostinger extends BasePushCommand
             return Command::FAILURE;
         }
 
-        // Phase 2: Compile Local Assets
+        // Phase 2: Compile Local Assets (Built exactly ONCE here)
         if (!$this->compileFrontendAssetsLocally()) {
             return Command::FAILURE;
         }
@@ -50,7 +50,7 @@ class PushHostinger extends BasePushCommand
         $absolutePath = "/home/{$env['ssh_user']}/domains/{$env['site_dir']}";
 
         $sshBase = sprintf(
-            'ssh -p %d -o StrictHostKeyChecking=accept-new %s@%s',
+            'ssh -p %d -o StrictHostKeyChecking=accept-new -o BatchMode=yes %s@%s',
             $env['ssh_port'],
             $env['ssh_user'],
             $env['ssh_host']
@@ -141,7 +141,6 @@ class PushHostinger extends BasePushCommand
         if (!empty($token)) {
             $this->info('🤖 GITHUB_API_TOKEN found. Attempting automatic Deploy Key injection...');
 
-            // Extract owner and repository strings from tracking signature pattern
             if (preg_match('/[:\/]([^\/]+)\/([^\/\.]+)/', $repoUrl, $repoMatches)) {
                 $owner = $repoMatches[1];
                 $repoName = $repoMatches[2];
@@ -186,7 +185,7 @@ class PushHostinger extends BasePushCommand
             return true;
         }
 
-        // 1. Sync Application Core via Git (Clone or Pull depending on current deployment footprint)
+        // 1. Synchronize Codebase via Git
         $this->info('🔄 Synchronizing codebase versions on server target...');
         $repoStatusCmd = "{$sshBase} " . escapeshellarg("test -d '{$absolutePath}/.git' && echo 'pull' || echo 'clone'");
         $repoStatus = trim(Process::run($repoStatusCmd)->output());
@@ -206,58 +205,65 @@ class PushHostinger extends BasePushCommand
             $this->printFormattedOutput('Sync Error Output', $syncProcess->errorOutput());
             return false;
         }
+        $this->info('   ↳ Codebase successfully synced.');
 
-        // 2. Synchronize Frontend Bundles via Rsync Over SSH
+        // 2. Synchronize Frontend Bundles via Windows-Safe Compressed Tar Pipeline
         if (is_dir(base_path('public/build'))) {
-            $this->info('📤 Delivering compiled frontend bundles over via Rsync optimization loop...');
+            $this->info('📤 Delivering compiled frontend bundles via compressed stream pipeline...');
             $remoteBuildPath = "{$absolutePath}/public/build";
 
-            // Clean up any old asset links or folders on Hostinger before running rsync
-            Process::run("{$sshBase} " . escapeshellarg("rm -rf '{$remoteBuildPath}'"));
+            // Wipe old asset directories first to avoid folder layouts locking out transfers
+            Process::run("{$sshBase} " . escapeshellarg("rm -rf '{$remoteBuildPath}' && mkdir -p '{$absolutePath}/public'"));
 
-            $rsyncCmd = sprintf(
-                'rsync -rz -e "ssh -p %d -o StrictHostKeyChecking=accept-new" %s/ %s@%s:%s',
-                $env['ssh_port'],
-                escapeshellarg(base_path('public/build')),
-                $env['ssh_user'],
-                $env['ssh_host'],
-                escapeshellarg($remoteBuildPath)
+            // Stream compressed archive directly inside standard terminal inputs to defeat dup() socket bugs
+            $tarCmd = sprintf(
+                'tar -czf - -C ./public build | %s "tar -xzf - -C %s"',
+                $sshBase,
+                escapeshellarg($absolutePath . '/public')
             );
 
-            $rsyncProcess = Process::run($rsyncCmd);
-            if (!$rsyncProcess->successful()) {
-                $this->warn('⚠️  Rsync transfer encountered an error. Assets might need server compilation.');
-                if ($this->option('debug')) {
-                    $this->line($rsyncProcess->errorOutput());
-                }
+            $this->debug("Running Asset Sync Command: {$tarCmd}");
+            $tarProcess = Process::run($tarCmd);
+
+            if (!$tarProcess->successful()) {
+                $this->error('❌ Asset synchronization pipeline failed completely.');
+                $this->printFormattedOutput('Asset Stream Failure Logs', $tarProcess->errorOutput());
+                return false;
             }
+
+            $this->info('   ↳ Frontend assets synchronized successfully.');
         }
 
-        // 3. Server Optimization Pipeline Execution
+        // 3. Server Optimization Pipeline Execution (Strict Failure Loop / Circuit-Breaker Mode)
         $this->info('⚙️  Running production optimization pipeline over SSH...');
 
         $remoteCommands = [
-            "cd '{$absolutePath}'",
-            "composer install --no-dev --optimize-autoloader --no-interaction",
-            "if [ ! -f .env ]; then cp .env.example .env && php artisan key:generate; fi",
-            "php artisan migrate --force",
-            "if [ ! -L public/storage ] && [ ! -d public/storage ]; then php artisan storage:link; fi",
-            "if [ ! -L public_html ] && [ ! -d public_html ]; then ln -s public public_html; fi",
-            "php artisan optimize:clear",
-            "php artisan optimize"
+            "Ensure App Directory Context" => "cd '{$absolutePath}'",
+            "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
+            "Setup Environment Config"      => "cd '{$absolutePath}' && if [ ! -f .env ]; then cp .env.example .env && php artisan key:generate --quiet; fi",
+            "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
+            "Setup Storage Link"           => "cd '{$absolutePath}' && if [ ! -L public/storage ] && [ ! -d public/storage ]; then php artisan storage:link; fi",
+            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ ! -L public_html ] && [ ! -d public_html ]; then ln -s public public_html; fi",
+            "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
+            "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
         ];
 
-        $optimizationCmd = "{$sshBase} " . escapeshellarg(implode(' && ', $remoteCommands));
-        $optimizationProcess = Process::timeout(self::PROCESS_TIMEOUT)->run($optimizationCmd);
+        foreach ($remoteCommands as $taskName => $commandString) {
+            $this->debug("Executing task: {$taskName}");
+            $execCmd = "{$sshBase} " . escapeshellarg($commandString);
+            $process = Process::timeout(self::PROCESS_TIMEOUT)->run($execCmd);
 
-        if ($this->option('debug')) {
-            $this->printFormattedOutput('Pipeline Execution Standard Trace Log', $optimizationProcess->output());
-        }
-
-        if (!$optimizationProcess->successful()) {
-            $this->error('❌ Optimization tasks running on Hostinger failed.');
-            $this->printFormattedOutput('Server Pipeline Crash Output Log', $optimizationProcess->errorOutput());
-            return false;
+            if (!$process->successful()) {
+                $this->line('');
+                $this->error("❌ Fatal Circuit-Breaker: Optimization step failed at [{$taskName}]. Stopping deployment.");
+                $this->printFormattedOutput("{$taskName} Error Trace Log", $process->errorOutput());
+                return false;
+            } else {
+                $this->info("   ↳ Step [{$taskName}] completed successfully.");
+                if ($this->option('debug')) {
+                    $this->printFormattedOutput("{$taskName} Output Trace", $process->output());
+                }
+            }
         }
 
         return true;
