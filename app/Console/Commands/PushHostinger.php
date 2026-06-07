@@ -30,15 +30,14 @@ class PushHostinger extends BasePushCommand
                 return Command::FAILURE;
             }
 
-            // Convert Repo URL to SSH format automatically if it is HTTPS
-            $repoUrl = $env['repo_url'];
-            if (str_starts_with($repoUrl, 'http')) {
-                if (preg_match('/https?:\/\/([^\/]+)\/([^\/]+)\/([^\/\s]+)/', $repoUrl, $matches)) {
-                    $repoUrl = "git@{$matches[1]}:{$matches[2]}/{$matches[3]}";
-                    if (!str_ends_with($repoUrl, '.git')) {
-                        $repoUrl .= '.git';
+            // ISOLATED SERVER TRANSFORMATION: Compute the SSH target string layout ONLY for Hostinger commands
+            $sshRepoUrl = $env['repo_url'];
+            if (str_starts_with($sshRepoUrl, 'http')) {
+                if (preg_match('/https?:\/\/([^\/]+)\/([^\/]+)\/([^\/\s]+)/', $sshRepoUrl, $matches)) {
+                    $sshRepoUrl = "git@{$matches[1]}:{$matches[2]}/{$matches[3]}";
+                    if (!str_ends_with($sshRepoUrl, '.git')) {
+                        $sshRepoUrl .= '.git';
                     }
-                    $this->debug("Converted HTTPS Repo URL to SSH Target: {$repoUrl}");
                 }
             }
 
@@ -87,12 +86,12 @@ class PushHostinger extends BasePushCommand
             $this->info('✅ Production target directory path verified.');
 
             // Phase 5: Server-to-GitHub Trust Verification Engine
-            if (!$this->resolveServerToGitHubTrust($repoUrl, $sshBase, $isDryRun)) {
+            if (!$this->resolveServerToGitHubTrust($sshRepoUrl, $sshBase, $isDryRun)) {
                 return Command::FAILURE;
             }
 
             // Phase 6: Code Syncing & Production Pipeline Optimization Execution
-            if (!$this->executeRemoteDeployment($repoUrl, $sshBase, $absolutePath, $isDryRun)) {
+            if (!$this->executeRemoteDeployment($sshRepoUrl, $sshBase, $absolutePath, $isDryRun)) {
                 return Command::FAILURE;
             }
 
@@ -279,7 +278,6 @@ class PushHostinger extends BasePushCommand
         if ($repoStatus === 'clone') {
             $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git clone -b {$branch} {$repoUrl} .");
         } else {
-            // FIX: If the remote was originally cloned via HTTPS previously, forcefully change the remote origin path to SSH target on Hostinger right before pulling
             $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git remote set-url origin {$repoUrl} && git fetch origin && git checkout {$branch} && git pull origin {$branch}");
         }
 
