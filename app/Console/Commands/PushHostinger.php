@@ -33,10 +33,11 @@ class PushHostinger extends BasePushCommand
             return Command::FAILURE;
         }
 
-        // Phase 3: Synchronize with Local GitHub wizard via Sub-Command calling
+        // Phase 3: Synchronize with Local GitHub wizard via Sub-Command calling (Passing --skip-assets)
         $this->info('🔄 Routing tasks into local Git setup wizard...');
         $gitWizardCode = $this->call('push:github', [
             '--dry-run' => $isDryRun,
+            '--skip-assets' => true,
             '--debug' => $this->option('debug'),
         ]);
 
@@ -207,7 +208,7 @@ class PushHostinger extends BasePushCommand
         }
         $this->info('   ↳ Codebase successfully synced.');
 
-        // 2. Synchronize Frontend Bundles via Windows-Safe Compressed Tar Pipeline
+        // 2. Synchronize Frontend Bundles via Safe Compressed Tar Pipeline
         if (is_dir(base_path('public/build'))) {
             $this->info('📤 Delivering compiled frontend bundles via compressed stream pipeline...');
             $remoteBuildPath = "{$absolutePath}/public/build";
@@ -215,7 +216,7 @@ class PushHostinger extends BasePushCommand
             // Wipe old asset directories first to avoid folder layouts locking out transfers
             Process::run("{$sshBase} " . escapeshellarg("rm -rf '{$remoteBuildPath}' && mkdir -p '{$absolutePath}/public'"));
 
-            // Stream compressed archive directly inside standard terminal inputs to defeat dup() socket bugs
+            // Stream compressed archive directly inside standard terminal inputs to defeat Windows dup() socket bugs
             $tarCmd = sprintf(
                 'tar -czf - -C ./public build | %s "tar -xzf - -C %s"',
                 $sshBase,
@@ -237,13 +238,14 @@ class PushHostinger extends BasePushCommand
         // 3. Server Optimization Pipeline Execution (Strict Failure Loop / Circuit-Breaker Mode)
         $this->info('⚙️  Running production optimization pipeline over SSH...');
 
+        // Dynamic Symlink Handler: If a real public_html folder exists and isn't a symlink, back it up safely so the symlink can create properly
         $remoteCommands = [
             "Ensure App Directory Context" => "cd '{$absolutePath}'",
             "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
             "Setup Environment Config"      => "cd '{$absolutePath}' && if [ ! -f .env ]; then cp .env.example .env && php artisan key:generate --quiet; fi",
             "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
             "Setup Storage Link"           => "cd '{$absolutePath}' && if [ ! -L public/storage ] && [ ! -d public/storage ]; then php artisan storage:link; fi",
-            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ ! -L public_html ] && [ ! -d public_html ]; then ln -s public public_html; fi",
+            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ ! -L public_html ]; then if [ -d public_html ]; then mv public_html public_html_backup_$(date +%F); fi; ln -s public public_html; fi",
             "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
             "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
         ];

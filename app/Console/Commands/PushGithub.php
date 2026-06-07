@@ -8,9 +8,10 @@ use Illuminate\Support\Facades\Process;
 class PushGithub extends BasePushCommand
 {
     protected $signature = 'push:github
-                            {--dry-run : Simulate all steps without changing your repository}
-                            {--debug   : Display raw underlying git execution logs}
-                            {--timeout= : Git push timeout window in seconds (default: 60)}';
+                            {--dry-run     : Simulate all steps without changing your repository}
+                            {--debug       : Display raw underlying git execution logs}
+                            {--skip-assets : Skip compiling frontend assets locally}
+                            {--timeout=    : Git push timeout window in seconds (default: 60)}';
 
     protected $description = 'Compiles production frontend assets locally and executes the Git push wizard.';
 
@@ -20,6 +21,7 @@ class PushGithub extends BasePushCommand
     {
         $isDryRun = (bool) $this->option('dry-run');
         $timeout = (int) ($this->option('timeout') ?: 60);
+        $skipAssets = (bool) $this->option('skip-assets');
 
         $this->line('');
         $this->info('🚀 Executing Local Git Deployment Wizard...');
@@ -34,9 +36,13 @@ class PushGithub extends BasePushCommand
             return Command::FAILURE;
         }
 
-        // Step 2 — Compile Frontend Assets Locally
-        if (!$this->compileFrontendAssetsLocally()) {
-            return Command::FAILURE;
+        // Step 2 — Compile Frontend Assets Locally (Skipped if requested by push:hostinger)
+        if (!$skipAssets) {
+            if (!$this->compileFrontendAssetsLocally()) {
+                return Command::FAILURE;
+            }
+        } else {
+            $this->debug('Frontend asset compilation handled by parent command. Skipping duplicate build.');
         }
 
         // Step 3 — Git Integration Pipeline
