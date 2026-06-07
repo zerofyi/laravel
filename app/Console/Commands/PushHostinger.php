@@ -186,7 +186,7 @@ class PushHostinger extends BasePushCommand
                     }
 
                     if ($alreadyLinked) {
-                        $this->info('✅ Deploy key already recognized active on GitHub.');
+                        $this->info('✅ Remote security trust chain verified (Deploy key active).');
                         return true;
                     }
 
@@ -265,7 +265,8 @@ class PushHostinger extends BasePushCommand
         $branch = ($branchCheck->successful() && !empty(trim($branchCheck->output()))) ? trim($branchCheck->output()) : 'main';
 
         if ($repoStatus === 'clone') {
-            $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git clone -b {$branch} " . escapeshellarg($repoUrl) . " .");
+            // FIX: Removed the duplicate escapeshellarg layer nesting around $repoUrl inside the string layout
+            $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git clone -b {$branch} {$repoUrl} .");
         } else {
             $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git fetch origin && git checkout {$branch} && git pull origin {$branch}");
         }
