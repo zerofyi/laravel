@@ -17,7 +17,7 @@ class PasswordController extends Controller
      * Show the user's password settings page.
      */
 
-    // i am Here
+    // i am Here Arr::get($array, 'key', $default)
     public function edit(Request $request): Response
     {
         return Inertia::render('settings/password', [
