@@ -47,8 +47,25 @@ class PushGithub extends BasePushCommand
                 $this->debug('Frontend asset compilation handled by parent command. Skipping duplicate build.');
             }
 
+            // Convert local repo token references to clean SSH configurations if HTTPS format matches
+            $repoUrl = $env['repo_url'];
+            if (str_starts_with($repoUrl, 'http')) {
+                if (preg_match('/https?:\/\/([^\/]+)\/([^\/]+)\/([^\/\s]+)/', $repoUrl, $matches)) {
+                    $repoUrl = "git@{$matches[1]}:{$matches[2]}/{$matches[3]}";
+                    if (!str_ends_with($repoUrl, '.git')) {
+                        $repoUrl .= '.git';
+                    }
+
+                    // Rewrite local repository origin context configuration to match clean SSH paths
+                    if (!$isDryRun) {
+                        Process::run('git remote set-url origin ' . escapeshellarg($repoUrl));
+                    }
+                    $this->debug("Successfully converted local origin context to SSH path: {$repoUrl}");
+                }
+            }
+
             // Step 3 — Git Tracking and Synchronization Pipeline
-            if (!$this->executeGitSetupWizard($env['repo_url'], $timeout, $isDryRun)) {
+            if (!$this->executeGitSetupWizard($repoUrl, $timeout, $isDryRun)) {
                 return Command::FAILURE;
             }
         } catch (Exception $e) {
@@ -134,7 +151,7 @@ class PushGithub extends BasePushCommand
 
         // 6. Push Submission & Fail-Fast Diagnostics
         $this->line('');
-        $this->info("Pushing branch [{$branch}] to target remote destination...");
+        $this->info(" Pushing branch [{$branch}] to target destination...");
         $this->line('');
 
         if ($isDryRun) {
