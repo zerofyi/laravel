@@ -98,6 +98,7 @@ class PushHostinger extends BasePushCommand
 
     private function resolveServerToGitHubTrust(string $repoUrl, string $sshBase, bool $isDryRun): bool
     {
+        // Extract Git provider hostname pattern cleanly
         $host = '';
         if (preg_match('/@([^:]+):/', $repoUrl, $matches)) {
             $host = $matches[1];
@@ -119,8 +120,13 @@ class PushHostinger extends BasePushCommand
         // 2. Intercept repository configuration profile context visibility variables
         $this->info('🔍 Resolving repository accessibility profile context...');
 
-        // FIX: Force Git to bypass your local cached credentials to determine true repository privacy
-        $visibilityCheck = Process::run('git -c credential.helper= ls-remote -h ' . escapeshellarg($repoUrl));
+        // FIX: Completely strip VS Code authentication injection by disabling terminal prompts,
+        // credential helpers, and wiping the environmental variables VS Code uses to force login.
+        $visibilityCheck = Process::env([
+            'GITHUB_TOKEN'        => null,
+            'GIT_ASKPASS'        => 'echo', // Bypasses VS Code's internal terminal askpass helper
+            'GIT_TERMINAL_PROMPT' => '0'
+        ])->run('git -c credential.helper= ls-remote -h ' . escapeshellarg($repoUrl));
 
         if ($visibilityCheck->successful()) {
             $this->info('✅ Public repository signature detected. Skipping authentication setup steps.');
