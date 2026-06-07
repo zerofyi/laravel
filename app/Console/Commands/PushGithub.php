@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Process;
+use Exception;
 
 class PushGithub extends BasePushCommand
 {
@@ -30,23 +31,28 @@ class PushGithub extends BasePushCommand
         }
         $this->line('');
 
-        // Step 1 — Validate local environment
-        $env = $this->validateLocalEnvironment(false);
-        if (!$env) {
-            return Command::FAILURE;
-        }
-
-        // Step 2 — Compile Frontend Assets Locally (Skipped if requested by push:hostinger)
-        if (!$skipAssets) {
-            if (!$this->compileFrontendAssetsLocally()) {
+        try {
+            // Step 1 — Validate environment configurations
+            $env = $this->validateLocalEnvironment(false);
+            if (!$env) {
                 return Command::FAILURE;
             }
-        } else {
-            $this->debug('Frontend asset compilation handled by parent command. Skipping duplicate build.');
-        }
 
-        // Step 3 — Git Integration Pipeline
-        if (!$this->executeGitSetupWizard($env['repo_url'], $timeout, $isDryRun)) {
+            // Step 2 — Compile Frontend Assets Locally
+            if (!$skipAssets) {
+                if (!$this->compileFrontendAssetsLocally()) {
+                    return Command::FAILURE;
+                }
+            } else {
+                $this->debug('Frontend asset compilation handled by parent command. Skipping duplicate build.');
+            }
+
+            // Step 3 — Git Tracking and Synchronization Pipeline
+            if (!$this->executeGitSetupWizard($env['repo_url'], $timeout, $isDryRun)) {
+                return Command::FAILURE;
+            }
+        } catch (Exception $e) {
+            $this->error('❌ System exception encountered inside Git engine loop: ' . $e->getMessage());
             return Command::FAILURE;
         }
 
@@ -56,14 +62,14 @@ class PushGithub extends BasePushCommand
 
     private function executeGitSetupWizard(string $repoUrl, int $timeout, bool $isDryRun): bool
     {
-        // 1. Verify Git availability
+        // 1. Verify system Git binary accessibility
         $gitCheckCmd = str_starts_with(strtoupper(PHP_OS), 'WIN') ? 'where git' : 'which git';
         if (!Process::run($gitCheckCmd)->successful()) {
             $this->error('❌ Git binary is not installed or not found in your system PATH.');
             return false;
         }
 
-        // 2. Check Repository Initialization state
+        // 2. Resolve Active Repository Working Tree status
         $isInit = Process::run('git rev-parse --is-inside-work-tree');
         if (!$isInit->successful() || trim($isInit->output()) !== 'true') {
             $this->warn('[WARN] Current working directory is not an active Git repository.');
@@ -84,21 +90,21 @@ class PushGithub extends BasePushCommand
             $this->info('✅ New Git repository established with initial commit structure.');
         }
 
-        // 3. Evaluate Uncommitted Pending Changes
+        // 3. Process Pending Working Tree Changes
         $status = Process::run('git status --porcelain');
         if (!empty(trim($status->output()))) {
             $this->warn('⚠️  Uncommitted modifications detected in your working directory:');
             $this->printFormattedOutput('Changed Files', $status->output());
 
             $msg = $this->ask('Enter a commit message for these changes', 'Incremental updates');
-            if (empty($msg)) {
+            if (empty($msg) || trim($msg) === '') {
                 $this->error('❌ Deployment stopped. A clean commit description is mandatory.');
                 return false;
             }
 
             if (!$isDryRun) {
                 Process::run('git add .');
-                $commit = Process::run('git commit -m ' . escapeshellarg($msg));
+                $commit = Process::run('git commit -m ' . escapeshellarg(trim($msg)));
                 if (!$commit->successful()) {
                     $this->error('❌ Staged changes commit process failed.');
                     return false;
@@ -109,7 +115,7 @@ class PushGithub extends BasePushCommand
             $this->info('✅ Workspace status clean. No tracking adjustments needed.');
         }
 
-        // 4. Remote Origin Resolution
+        // 4. Remote Origin Reference Integrity Validation
         $currentRemote = Process::run('git config --get remote.origin.url');
         if (!$currentRemote->successful()) {
             $this->info("ℹ️ Registering missing remote configuration matching tracking address: {$repoUrl}");
@@ -122,23 +128,23 @@ class PushGithub extends BasePushCommand
             }
         }
 
-        // 5. Detect Branch Name
+        // 5. Detect and Extract Active Branch Name safely
         $branchCheck = Process::run('git branch --show-current');
         $branch = ($branchCheck->successful() && !empty(trim($branchCheck->output()))) ? trim($branchCheck->output()) : 'main';
 
-        // 6. Push Submission & Diagnostics
+        // 6. Push Submission & Fail-Fast Diagnostics
         $this->line('');
-        $this->line(" Pushing branch [{$branch}] to target destination...");
+        $this->info("Pushing branch [{$branch}] to target remote destination...");
         $this->line('');
 
         if ($isDryRun) {
-            $this->info('[DRY RUN] Push step completed.');
+            $this->info('[DRY RUN] Push tracking skip sequence completed.');
             return true;
         }
 
         $push = Process::env([
             'GIT_TERMINAL_PROMPT' => '0',
-            'GIT_SSH_COMMAND' => 'ssh -o BatchMode=yes',
+            'GIT_SSH_COMMAND' => 'ssh -o BatchMode=yes -o ConnectTimeout=15',
         ])->timeout($timeout)->run('git push -u origin ' . escapeshellarg($branch));
 
         if ($this->option('debug')) {
@@ -150,7 +156,7 @@ class PushGithub extends BasePushCommand
             return true;
         }
 
-        // Error Diagnostics block
+        // Structural Error Capture & Diagnostic Analysis
         $this->error('❌ Push target synchronization encountered a fatal exception.');
         $err = $push->errorOutput();
         $errLower = strtolower($err);
