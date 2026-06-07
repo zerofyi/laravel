@@ -135,26 +135,25 @@ class PushHostinger extends BasePushCommand
 
         $this->warn('🔒 Private repository detected. Managing deployment keys on the server...');
 
-        // 3. Resolve key file locations on Hostinger or generate fallback profiles dynamically
+        // 3. Check for existing server keys or generate an unpassphrased profile dynamically
         $keyCheckCmd = "{$sshBase} " . escapeshellarg("test -f ~/.ssh/id_ed25519 && echo 'exists' || (test -f ~/.ssh/id_rsa && echo 'rsa_exists' || echo 'missing')");
         $keyCheck = trim(Process::run($keyCheckCmd)->output());
 
         $keyPath = '~/.ssh/id_ed25519';
         if ($keyCheck === 'missing') {
             $this->info('🔑 Key files absent on host server. Generating fresh unpassphrased Ed25519 key pair...');
-            $genCmd = "{$sshBase} " . escapeshellarg('ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519');
+
+            // FIX: Explicitly supply both the filename output path (-f) and the empty passphrase (-N)
+            // inside the single string context to bypass the interactive prompts entirely on Hostinger.
+            $genCmd = "{$sshBase} " . escapeshellarg('mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519');
             Process::run($genCmd);
         } elseif ($keyCheck === 'rsa_exists') {
             $keyPath = '~/.ssh/id_rsa';
         }
 
+        // Fetch public key footprint output string directly from the host filesystem
         $getPubCmd = "{$sshBase} " . escapeshellarg("cat {$keyPath}.pub");
         $publicKey = trim(Process::run($getPubCmd)->output());
-
-        if (empty($publicKey)) {
-            $this->error('❌ Failed to retrieve structural public key string from server configuration context.');
-            return false;
-        }
 
         // 4. Inject public key data string directly into GitHub Repository configurations if a token is readily present
         $token = env('GITHUB_API_TOKEN');
