@@ -33,7 +33,7 @@ class PushHostinger extends BasePushCommand
             return Command::FAILURE;
         }
 
-        // Phase 3: Synchronize with Local GitHub wizard via Sub-Command calling (Passing --skip-assets)
+        // Phase 3: Synchronize with Local GitHub wizard via Sub-Command calling
         $this->info('🔄 Routing tasks into local Git setup wizard...');
         $gitWizardCode = $this->call('push:github', [
             '--dry-run' => $isDryRun,
@@ -208,7 +208,7 @@ class PushHostinger extends BasePushCommand
         }
         $this->info('   ↳ Codebase successfully synced.');
 
-        // 2. Synchronize Frontend Bundles via Safe Compressed Tar Pipeline
+        // 2. Synchronize Frontend Bundles via Windows-Safe Compressed Tar Pipeline
         if (is_dir(base_path('public/build'))) {
             $this->info('📤 Delivering compiled frontend bundles via compressed stream pipeline...');
             $remoteBuildPath = "{$absolutePath}/public/build";
@@ -238,14 +238,13 @@ class PushHostinger extends BasePushCommand
         // 3. Server Optimization Pipeline Execution (Strict Failure Loop / Circuit-Breaker Mode)
         $this->info('⚙️  Running production optimization pipeline over SSH...');
 
-        // Dynamic Symlink Handler: If a real public_html folder exists and isn't a symlink, back it up safely so the symlink can create properly
         $remoteCommands = [
             "Ensure App Directory Context" => "cd '{$absolutePath}'",
             "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
             "Setup Environment Config"      => "cd '{$absolutePath}' && if [ ! -f .env ]; then cp .env.example .env && php artisan key:generate --quiet; fi",
             "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
             "Setup Storage Link"           => "cd '{$absolutePath}' && if [ ! -L public/storage ] && [ ! -d public/storage ]; then php artisan storage:link; fi",
-            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ ! -L public_html ]; then if [ -d public_html ]; then mv public_html public_html_backup_$(date +%F); fi; ln -s public public_html; fi",
+            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && if [ -d public_html ] && [ ! -L public_html ]; then mv public_html public_html_backup_$(date +%F); fi; rm -f public_html; ln -s public public_html",
             "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
             "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
         ];
