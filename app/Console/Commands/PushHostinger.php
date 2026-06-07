@@ -118,6 +118,7 @@ class PushHostinger extends BasePushCommand
 
         // 2. Intercept repository configuration profile context visibility variables
         $this->info('🔍 Resolving repository accessibility profile context...');
+
         // FIX: Force Git to bypass your local cached credentials to determine true repository privacy
         $visibilityCheck = Process::run('git -c credential.helper= ls-remote -h ' . escapeshellarg($repoUrl));
 
