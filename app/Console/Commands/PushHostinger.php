@@ -340,3 +340,4 @@ class PushHostinger extends BasePushCommand
         return true;
     }
 }
+
