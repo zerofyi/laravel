@@ -142,10 +142,8 @@ class PushGithub extends BasePushCommand
             return true;
         }
 
-        $push = Process::env([
-            'GIT_TERMINAL_PROMPT' => '0',
-            'GIT_SSH_COMMAND' => 'ssh -o BatchMode=yes -o ConnectTimeout=15',
-        ])->timeout($timeout)->run('git push -u origin ' . escapeshellarg($branch));
+        // Keeps your local HTTPS workflow completely uninhibited. Bypasses local SSH issues natively.
+        $push = Process::timeout($timeout)->run('git push -u origin ' . escapeshellarg($branch));
 
         if ($this->option('debug')) {
             $this->printFormattedOutput('Raw Out', $push->output());

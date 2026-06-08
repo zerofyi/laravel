@@ -55,7 +55,7 @@ abstract class BasePushCommand extends Command
                 return null;
             }
 
-            // Strict Anti-Destruction Check: Ensure directory name contains no hazardous path traversal elements
+            // Strict Anti-Destruction Check: Ensure directory name contains no hazardous path characters
             if (str_contains($config['site_dir'], '..') || str_contains($config['site_dir'], '/') || str_contains($config['site_dir'], '\\')) {
                 $this->error('❌ Critical Security Alert: HOSTINGER_SITE_DIR contains unsafe path characters.');
                 return null;

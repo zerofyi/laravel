@@ -30,6 +30,17 @@ class PushHostinger extends BasePushCommand
                 return Command::FAILURE;
             }
 
+            // Compute an SSH variant string layout ONLY for Hostinger background commands
+            $sshRepoUrl = $env['repo_url'];
+            if (str_starts_with($sshRepoUrl, 'http')) {
+                if (preg_match('/https?:\/\/([^\/]+)\/([^\/]+)\/([^\/\s]+)/', $sshRepoUrl, $matches)) {
+                    $sshRepoUrl = "git@{$matches[1]}:{$matches[2]}/{$matches[3]}";
+                    if (!str_ends_with($sshRepoUrl, '.git')) {
+                        $sshRepoUrl .= '.git';
+                    }
+                }
+            }
+
             // Phase 2: Compile Frontend Assets Locally (Built exactly ONCE)
             if (!$this->compileFrontendAssetsLocally()) {
                 return Command::FAILURE;
@@ -51,7 +62,6 @@ class PushHostinger extends BasePushCommand
             // Phase 4: Local-to-Server SSH Verification handshake
             $this->info('🔑 Initializing connection sequence with remote Hostinger node...');
 
-            // Build absolute path targets with programmatic string sanitation guards
             $userClean = trim($env['ssh_user']);
             $dirClean = trim($env['site_dir']);
             $absolutePath = "/home/{$userClean}/domains/{$dirClean}";
@@ -76,12 +86,13 @@ class PushHostinger extends BasePushCommand
             $this->info('✅ Production target directory path verified.');
 
             // Phase 5: Server-to-GitHub Trust Verification Engine
-            if (!$this->resolveServerToGitHubTrust($env['repo_url'], $sshBase, $isDryRun)) {
+            $finalServerRepoUrl = $this->resolveServerToGitHubTrust($env['repo_url'], $sshRepoUrl, $sshBase, $isDryRun);
+            if (!$finalServerRepoUrl) {
                 return Command::FAILURE;
             }
 
             // Phase 6: Code Syncing & Production Pipeline Optimization Execution
-            if (!$this->executeRemoteDeployment($env, $sshBase, $absolutePath, $isDryRun)) {
+            if (!$this->executeRemoteDeployment($finalServerRepoUrl, $sshBase, $absolutePath, $isDryRun)) {
                 return Command::FAILURE;
             }
 
@@ -96,20 +107,19 @@ class PushHostinger extends BasePushCommand
         return Command::SUCCESS;
     }
 
-    private function resolveServerToGitHubTrust(string $repoUrl, string $sshBase, bool $isDryRun): bool
+    private function resolveServerToGitHubTrust(string $httpRepoUrl, string $sshRepoUrl, string $sshBase, bool $isDryRun): ?string
     {
-        // Extract Git provider hostname pattern cleanly
         $host = '';
-        if (preg_match('/@([^:]+):/', $repoUrl, $matches)) {
+        if (preg_match('/@([^:]+):/', $sshRepoUrl, $matches)) {
             $host = $matches[1];
-        } elseif (preg_match('/https?:\/\/([^\/]+)/', $repoUrl, $matches)) {
+        } elseif (preg_match('/https?:\/\/([^\/]+)/', $httpRepoUrl, $matches)) {
             $host = $matches[1];
         }
         $host = trim($host ?: 'github.com');
 
         if ($isDryRun) {
             $this->info('[DRY RUN] Skip trust layer evaluation.');
-            return true;
+            return $httpRepoUrl;
         }
 
         // 1. Force feed hostname signatures safely into remote known_hosts mapping
@@ -120,17 +130,15 @@ class PushHostinger extends BasePushCommand
         // 2. Intercept repository configuration profile context visibility variables
         $this->info('🔍 Resolving repository accessibility profile context...');
 
-        // FIX: Completely strip VS Code authentication injection by disabling terminal prompts,
-        // credential helpers, and wiping the environmental variables VS Code uses to force login.
         $visibilityCheck = Process::env([
             'GITHUB_TOKEN'        => null,
-            'GIT_ASKPASS'        => 'echo', // Bypasses VS Code's internal terminal askpass helper
+            'GIT_ASKPASS'        => 'echo',
             'GIT_TERMINAL_PROMPT' => '0'
-        ])->run('git -c credential.helper= ls-remote -h ' . escapeshellarg($repoUrl));
+        ])->run('git -c credential.helper= ls-remote -h ' . escapeshellarg($httpRepoUrl));
 
         if ($visibilityCheck->successful()) {
             $this->info('✅ Public repository signature detected. Skipping authentication setup steps.');
-            return true;
+            return $httpRepoUrl;
         }
 
         $this->warn('🔒 Private repository detected. Managing deployment keys on the server...');
@@ -143,14 +151,13 @@ class PushHostinger extends BasePushCommand
         if ($keyCheck === 'missing') {
             $this->info('🔑 Key files absent on host server. Generating fresh unpassphrased RSA 4096-bit key pair...');
 
-            // FIX: Using single-quoted -P '' fixes Hostinger's "Too many arguments" parsing bug
             $genCmd = "{$sshBase} " . escapeshellarg("mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t rsa -b 4096 -P '' -f ~/.ssh/id_rsa");
             $genProcess = Process::run($genCmd);
 
             if (!$genProcess->successful()) {
                 $this->error('❌ Failed to execute key generation command on Hostinger.');
                 $this->printFormattedOutput('Keygen Error Output', $genProcess->errorOutput());
-                return false;
+                return null;
             }
         }
 
@@ -160,7 +167,7 @@ class PushHostinger extends BasePushCommand
 
         if (empty($publicKey)) {
             $this->error('❌ Failed to retrieve structural public key string from server configuration context.');
-            return false;
+            return null;
         }
 
         // Normalize Public Key: Strip host trail comments to fulfill precise API payload checks
@@ -172,14 +179,13 @@ class PushHostinger extends BasePushCommand
         if (!empty($token)) {
             $this->info('🤖 GITHUB_API_TOKEN found. Attempting automatic Deploy Key injection...');
 
-            if (preg_match('#https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$#', trim($repoUrl), $repoMatches)) {
-                $owner = $repoMatches[1];
-                $repoName = $repoMatches[2];
+            if (preg_match('#github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$#', trim($sshRepoUrl), $repoMatches)) {
+                $owner = trim($repoMatches[1]);
+                $repoName = trim($repoMatches[2]);
 
                 $apiUrl = "https://api.github.com/repos/{$owner}/{$repoName}/keys";
                 try {
-
-                    // Check if key already exists on GitHub API first to prevent duplicate errors
+                    // RESTORED: Check if key already exists on GitHub API first to prevent duplicate errors
                     $checkResponse = Http::withHeaders([
                         'Accept' => 'application/vnd.github.v3+json',
                         'Authorization' => "Bearer " . trim($token),
@@ -199,7 +205,7 @@ class PushHostinger extends BasePushCommand
 
                     if ($alreadyLinked) {
                         $this->info('✅ Deploy key already recognized active on GitHub.');
-                        return true;
+                        return $sshRepoUrl;
                     }
 
                     $response = Http::timeout(15)->withHeaders([
@@ -213,7 +219,7 @@ class PushHostinger extends BasePushCommand
 
                     if ($response->successful() || $response->status() === 422) {
                         $this->info('✅ Remote security trust chain verified (Deploy key active).');
-                        return true;
+                        return $sshRepoUrl;
                     }
                 } catch (Exception $e) {
                     $this->warn('⚠️  Automated token API registration handshake timed out.');
@@ -233,12 +239,12 @@ class PushHostinger extends BasePushCommand
         $this->line(str_repeat('-', 70));
         $this->line('');
 
-        // Loop confirmation logic matching reference specification
+        // RESTORED: Loop confirmation logic matching reference specification
         $maxAttempts = 3;
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             if (!$this->confirmYN("Press ENTER after you have saved this deploy key to GitHub to continue execution (Attempt {$attempt}/{$maxAttempts})", true)) {
                 $this->error('❌ Deployment cancelled by user option.');
-                return false;
+                return null;
             }
 
             $this->info('🔄 Testing remote server authentication credentials against GitHub...');
@@ -246,10 +252,9 @@ class PushHostinger extends BasePushCommand
             $testProcess = Process::run($testCmd);
             $testOutput = strtolower($testProcess->output());
 
-            // GitHub successfully welcomes authenticated keys with a soft 1 exit code message
             if (str_contains($testOutput, 'successfully authenticated') || str_contains($testOutput, 'hi ')) {
                 $this->info('✅ Key handshakes mapped successfully!');
-                return true;
+                return $sshRepoUrl;
             }
 
             if ($attempt < $maxAttempts) {
@@ -258,10 +263,10 @@ class PushHostinger extends BasePushCommand
         }
 
         $this->error('❌ Maximum key check attempts exhausted. Aborting deployment.');
-        return false;
+        return null;
     }
 
-    private function executeRemoteDeployment(array $env, string $sshBase, string $absolutePath, bool $isDryRun): bool
+    private function executeRemoteDeployment(string $repoUrl, string $sshBase, string $absolutePath, bool $isDryRun): bool
     {
         if ($isDryRun) {
             $this->info('[DRY RUN] Sync pipeline simulated successfully.');
@@ -277,9 +282,9 @@ class PushHostinger extends BasePushCommand
         $branch = ($branchCheck->successful() && !empty(trim($branchCheck->output()))) ? trim($branchCheck->output()) : 'main';
 
         if ($repoStatus === 'clone') {
-            $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git clone -b {$branch} {$env['repo_url']} .");
+            $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git clone -b {$branch} {$repoUrl} .");
         } else {
-            $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git fetch origin && git checkout {$branch} && git pull origin {$branch}");
+            $syncCmd = "{$sshBase} " . escapeshellarg("cd '{$absolutePath}' && git remote set-url origin {$repoUrl} && git fetch origin && git checkout {$branch} && git pull origin {$branch}");
         }
 
         $syncProcess = Process::timeout(self::PROCESS_TIMEOUT)->run($syncCmd);
@@ -295,10 +300,8 @@ class PushHostinger extends BasePushCommand
             $this->info('📤 Delivering compiled frontend bundles via compressed stream pipeline...');
             $remoteBuildPath = "{$absolutePath}/public/build";
 
-            // Wipe old workspace structures to avoid file locking bugs
             Process::run("{$sshBase} " . escapeshellarg("rm -rf '{$remoteBuildPath}' && mkdir -p '{$absolutePath}/public'"));
 
-            // Stream compressed binary pack data straight through standard terminal interface lines
             $tarCmd = sprintf(
                 'tar -czf - -C ./public build | %s "tar -xzf - -C %s"',
                 $sshBase,
