@@ -163,6 +163,10 @@ class PushHostinger extends BasePushCommand
             return false;
         }
 
+        // Normalize Public Key: Strip host trail comments to fulfill precise API payload checks
+        $keyParts = explode(' ', $publicKey);
+        $normalizedKey = (count($keyParts) >= 2) ? $keyParts[0] . ' ' . $keyParts[1] : $publicKey;
+
         // 4. Inject public key data string directly into GitHub Repository configurations if a token is readily present
         $token = env('GITHUB_API_TOKEN');
         if (!empty($token)) {
@@ -174,13 +178,36 @@ class PushHostinger extends BasePushCommand
 
                 $apiUrl = "https://api.github.com/repos/{$owner}/{$repoName}/keys";
                 try {
+
+                    // Check if key already exists on GitHub API first to prevent duplicate errors
+                    $checkResponse = Http::withHeaders([
+                        'Accept' => 'application/vnd.github.v3+json',
+                        'Authorization' => "Bearer " . trim($token),
+                    ])->get($apiUrl);
+
+                    $alreadyLinked = false;
+                    if ($checkResponse->successful()) {
+                        foreach ($checkResponse->json() as $existingKey) {
+                            $exParts = explode(' ', $existingKey['key']);
+                            $normalizedExKey = (count($exParts) >= 2) ? $exParts[0] . ' ' . $exParts[1] : $existingKey['key'];
+                            if ($normalizedExKey === $normalizedKey) {
+                                $alreadyLinked = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if ($alreadyLinked) {
+                        $this->info('✅ Deploy key already recognized active on GitHub.');
+                        return true;
+                    }
+
                     $response = Http::timeout(15)->withHeaders([
                         'Accept' => 'application/vnd.github.v3+json',
                         'Authorization' => "Bearer " . trim($token),
-                        'X-GitHub-Api-Version' => '2022-11-28',
                     ])->post($apiUrl, [
-                        'title' => 'Hostinger Server Deployment Key (Auto-Generated)',
-                        'key' => $publicKey,
+                        'title' => 'Hostinger Server Deployment Key',
+                        'key' => $normalizedKey,
                         'read_only' => true
                     ]);
 
@@ -206,8 +233,32 @@ class PushHostinger extends BasePushCommand
         $this->line(str_repeat('-', 70));
         $this->line('');
 
-        $this->confirmYN('Press ENTER after you have saved this deploy key to GitHub to continue execution...', true);
-        return true;
+        // Loop confirmation logic matching reference specification
+        $maxAttempts = 3;
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            if (!$this->confirmYN("Press ENTER after you have saved this deploy key to GitHub to continue execution (Attempt {$attempt}/{$maxAttempts})", true)) {
+                $this->error('❌ Deployment cancelled by user option.');
+                return false;
+            }
+
+            $this->info('🔄 Testing remote server authentication credentials against GitHub...');
+            $testCmd = "{$sshBase} " . escapeshellarg("ssh -T -o StrictHostKeyChecking=accept-new git@{$host} 2>&1");
+            $testProcess = Process::run($testCmd);
+            $testOutput = strtolower($testProcess->output());
+
+            // GitHub successfully welcomes authenticated keys with a soft 1 exit code message
+            if (str_contains($testOutput, 'successfully authenticated') || str_contains($testOutput, 'hi ')) {
+                $this->info('✅ Key handshakes mapped successfully!');
+                return true;
+            }
+
+            if ($attempt < $maxAttempts) {
+                $this->warn('⚠️  GitHub rejected the connection. Double-check that the key is saved correctly.');
+            }
+        }
+
+        $this->error('❌ Maximum key check attempts exhausted. Aborting deployment.');
+        return false;
     }
 
     private function executeRemoteDeployment(array $env, string $sshBase, string $absolutePath, bool $isDryRun): bool
