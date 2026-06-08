@@ -172,12 +172,13 @@ class PushHostinger extends BasePushCommand
         if (!empty($token)) {
             $this->info('🤖 GITHUB_API_TOKEN found. Attempting automatic Deploy Key injection...');
 
-            if (preg_match('/[:\/]([^\/]+)\/([^\/\.]+)/', trim($repoUrl), $repoMatches)) {
-                $owner = trim($repoMatches[1]);
-                $repoName = trim(str_replace('.git', '', $repoMatches[2]));
+            if (preg_match('#https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$#', trim($repoUrl), $repoMatches)) {
+                $owner = $repoMatches[1];
+                $repoName = $repoMatches[2];
 
                 $apiUrl = "https://api.github.com/repos/{$owner}/{$repoName}/keys";
                 $this->info($apiUrl);
+
                 try {
 
                     // Check if key already exists on GitHub API first to prevent duplicate errors
