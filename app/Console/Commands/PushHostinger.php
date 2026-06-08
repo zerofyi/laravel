@@ -177,6 +177,7 @@ class PushHostinger extends BasePushCommand
                     $response = Http::timeout(15)->withHeaders([
                         'Accept' => 'application/vnd.github.v3+json',
                         'Authorization' => "Bearer " . trim($token),
+                        'X-GitHub-Api-Version' => '2022-11-28',
                     ])->post($apiUrl, [
                         'title' => 'Hostinger Server Deployment Key (Auto-Generated)',
                         'key' => $publicKey,
