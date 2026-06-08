@@ -177,8 +177,6 @@ class PushHostinger extends BasePushCommand
                 $repoName = $repoMatches[2];
 
                 $apiUrl = "https://api.github.com/repos/{$owner}/{$repoName}/keys";
-                $this->info($apiUrl);
-
                 try {
 
                     // Check if key already exists on GitHub API first to prevent duplicate errors
@@ -186,8 +184,6 @@ class PushHostinger extends BasePushCommand
                         'Accept' => 'application/vnd.github.v3+json',
                         'Authorization' => "Bearer " . trim($token),
                     ])->get($apiUrl);
-
-                    $this->debug('GitHub API Deploy Keys Check Response: ' . $checkResponse->body());
 
                     $alreadyLinked = false;
                     if ($checkResponse->successful()) {
