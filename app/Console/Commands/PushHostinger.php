@@ -324,33 +324,48 @@ class PushHostinger extends BasePushCommand
         $this->info('⚙️  Running production optimization pipeline over SSH...');
 
         $remoteCommands = [
-            "Ensure App Directory Context" => "cd '{$absolutePath}'",
-            "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
-            "Setup Environment Config"      => "cd '{$absolutePath}' && if [ -f .env ]; then echo '👉 INFO: .env file already exists on Hostinger. Skipping creation safely.'; else if [ -f .env.example ]; then cp .env.example .env && php artisan key:generate --quiet && echo '✅ SUCCESS: Created fresh .env from .env.example'; else echo '⚠️ WARNING: .env.example is missing! Could not auto-generate .env'; fi; fi",
-            "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
-            "Setup Storage Link"           => "cd '{$absolutePath}' && if [ ! -L public/storage ] && [ ! -d public/storage ]; then php artisan storage:link 2>&1; fi",
-            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && rm -rf public_html && ln -sfn public public_html",
-            "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
-            "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
-        ];
+    "Ensure App Directory Context" => "cd '{$absolutePath}'",
+    "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
+    "Setup Environment Config"      => "cd '{$absolutePath}' && if [ -f .env ]; then echo '👉 INFO: .env file already exists on Hostinger. Skipping creation safely.'; else if [ -f .env.example ]; then cp .env.example .env && php artisan key:generate --quiet && echo '✅ SUCCESS: Created fresh .env from .env.example'; else echo '⚠️ WARNING: .env.example is missing! Could not auto-generate .env'; fi; fi",
+    "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
+
+    // 🔍 UPDATED: Added real-time decision logging and tracking strings
+    "Setup Storage Link"           => "cd '{$absolutePath}' && " .
+                                      "if [ -L public/storage ]; then " .
+                                      "    echo '👉 INFO: A symbolic link already exists at public/storage. Skipping creation.'; " .
+                                      "elif [ -d public/storage ]; then " .
+                                      "    echo '⚠️ WARNING: A physical directory already exists at public/storage! Laravel needs this path to be clear to map the link.'; " .
+                                      "else " .
+                                      "    echo '⚡ ACTION: No existing link found. Running fresh artisan storage:link command now...'; " .
+                                      "    php artisan storage:link 2>&1; " .
+                                      "fi",
+
+    "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && rm -rf public_html && ln -sfn public public_html",
+    "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
+    "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
+];
 
         foreach ($remoteCommands as $taskName => $commandString) {
-            $this->debug("Executing task: {$taskName}");
-            $execCmd = "{$sshBase} " . escapeshellarg($commandString);
-            $process = Process::timeout(self::PROCESS_TIMEOUT)->run($execCmd);
+    $this->debug("Executing task: {$taskName}");
+    $execCmd = "{$sshBase} " . escapeshellarg($commandString);
+    $process = Process::timeout(self::PROCESS_TIMEOUT)->run($execCmd);
 
-            if (!$process->successful()) {
-                $this->line('');
-                $this->error("❌ Fatal Circuit-Breaker: Optimization step failed at [{$taskName}]. Stopping deployment.");
-                $this->printFormattedOutput("{$taskName} Error Trace Log", $process->errorOutput());
-                return false;
-            } else {
-                $this->info("   ↳ Step [{$taskName}] completed successfully.");
-                if ($this->option('debug')) {
-                    $this->printFormattedOutput("{$taskName} Output Trace", $process->output());
-                }
-            }
+    if (!$process->successful()) {
+        $this->line('');
+        $this->error("❌ Fatal Circuit-Breaker: Optimization step failed at [{$taskName}]. Stopping deployment.");
+        $this->printFormattedOutput("{$taskName} Error Trace Log", $process->errorOutput());
+        return false;
+    } else {
+        $this->info("   ↳ Step [{$taskName}] completed successfully.");
+
+        // Always display what the storage link engine decided to do
+        if ($taskName === "Setup Storage Link" && !empty(trim($process->output()))) {
+            $this->line(trim($process->output()));
+        } elseif ($this->option('debug')) {
+            $this->printFormattedOutput("{$taskName} Output Trace", $process->output());
         }
+    }
+}
 
         return true;
     }
