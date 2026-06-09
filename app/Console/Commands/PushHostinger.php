@@ -324,48 +324,58 @@ class PushHostinger extends BasePushCommand
         $this->info('⚙️  Running production optimization pipeline over SSH...');
 
         $remoteCommands = [
-    "Ensure App Directory Context" => "cd '{$absolutePath}'",
-    "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
-    "Setup Environment Config"      => "cd '{$absolutePath}' && if [ -f .env ]; then echo '👉 INFO: .env file already exists on Hostinger. Skipping creation safely.'; else if [ -f .env.example ]; then cp .env.example .env && php artisan key:generate --quiet && echo '✅ SUCCESS: Created fresh .env from .env.example'; else echo '⚠️ WARNING: .env.example is missing! Could not auto-generate .env'; fi; fi",
-    "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
+            "Ensure App Directory Context" => "cd '{$absolutePath}'",
+            "Install Dependencies"          => "cd '{$absolutePath}' && composer install --no-dev --optimize-autoloader --no-interaction",
+            "Setup Environment Config"      => "cd '{$absolutePath}' && if [ -f .env ]; then echo '👉 INFO: .env file already exists on Hostinger. Skipping creation safely.'; else if [ -f .env.example ]; then cp .env.example .env && php artisan key:generate --quiet && echo '✅ SUCCESS: Created fresh .env from .env.example'; else echo '⚠️ WARNING: .env.example is missing! Could not auto-generate .env'; fi; fi",
+            "Run Migrations"               => "cd '{$absolutePath}' && php artisan migrate --force",
 
-    // 🔍 UPDATED: Added real-time decision logging and tracking strings
-    "Setup Storage Link"           => "cd '{$absolutePath}' && " .
-                                      "if [ -L public/storage ]; then " .
-                                      "    echo '👉 INFO: A symbolic link already exists at public/storage. Skipping creation.'; " .
-                                      "elif [ -d public/storage ]; then " .
-                                      "    echo '⚠️ WARNING: A physical directory already exists at public/storage! Laravel needs this path to be clear to map the link.'; " .
-                                      "else " .
-                                      "    echo '⚡ ACTION: No existing link found. Running fresh artisan storage:link command now...'; " .
-                                      "    php artisan storage:link 2>&1; " .
-                                      "fi",
+            // 🔍 Intelligent real-time decision-making with output capturing
+            "Setup Storage Link"           => "cd '{$absolutePath}' && " .
+                                            "if [ -L public/storage ]; then " .
+                                            "    echo '👉 INFO: A symbolic link already exists at public/storage. Skipping creation.'; " .
+                                            "elif [ -d public/storage ]; then " .
+                                            "    echo '⚠️ WARNING: A physical directory already exists at public/storage! Laravel needs this path to be clear to map the link.'; " .
+                                            "else " .
+                                            "    echo '⚡ ACTION: No existing link found. Running fresh artisan storage:link command now...'; " .
+                                            "    php artisan storage:link 2>&1; " .
+                                            "fi",
 
-    "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && rm -rf public_html && ln -sfn public public_html",
-    "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
-    "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
-];
+            "Setup Public HTML Symlink"    => "cd '{$absolutePath}' && rm -rf public_html && ln -sfn public public_html",
+            "Clear Optimization Cache"     => "cd '{$absolutePath}' && php artisan optimize:clear",
+            "Warm Production Cache"        => "cd '{$absolutePath}' && php artisan optimize"
+        ];
 
         foreach ($remoteCommands as $taskName => $commandString) {
-    $this->debug("Executing task: {$taskName}");
-    $execCmd = "{$sshBase} " . escapeshellarg($commandString);
-    $process = Process::timeout(self::PROCESS_TIMEOUT)->run($execCmd);
+            $this->debug("Executing task: {$taskName}");
+            $execCmd = "{$sshBase} " . escapeshellarg($commandString);
+            $process = Process::timeout(self::PROCESS_TIMEOUT)->run($execCmd);
 
-    if (!$process->successful()) {
-        $this->line('');
-        $this->error("❌ Fatal Circuit-Breaker: Optimization step failed at [{$taskName}]. Stopping deployment.");
-        $this->printFormattedOutput("{$taskName} Error Trace Log", $process->errorOutput());
-        return false;
-    } else {
-        $this->info("   ↳ Step [{$taskName}] completed successfully.");
+            if (!$process->successful()) {
+                $this->line('');
+                $this->error("❌ Fatal Circuit-Breaker: Optimization step failed at [{$taskName}]. Stopping deployment.");
+                // Displays stderr output, falls back to stdout if stderr is empty
+                $errorLog = !empty($process->errorOutput()) ? $process->errorOutput() : $process->output();
+                $this->printFormattedOutput("{$taskName} Error Trace Log", $errorLog);
+                return false;
+            } else {
+                $this->info("   ↳ Step [{$taskName}] completed successfully.");
 
-        // Always display what the storage link engine decided to do
-        if ($taskName === "Setup Storage Link" && !empty(trim($process->output()))) {
-            $this->line(trim($process->output()));
-        } elseif ($this->option('debug')) {
-            $this->printFormattedOutput("{$taskName} Output Trace", $process->output());
+                $outputTrimmed = trim($process->output());
+
+                // 🎛️ Intelligent Output Rules
+                if ($taskName === "Setup Storage Link" && !$this->option('debug') && !empty($outputTrimmed)) {
+                    // In standard mode, always print out ShipIt's custom real-time decision message
+                    $this->line($outputTrimmed);
+                } elseif ($this->option('debug')) {
+                    // In debug mode, show exactly what the command did along with its complete, raw response trace
+                    $this->line("<comment>[DEBUG] Command Sent:</comment> {$commandString}");
+                    $this->printFormattedOutput(
+                        "{$taskName} Output Trace",
+                        !empty($outputTrimmed) ? $outputTrimmed : "[Command completed with a silent/empty output buffer]"
+                    );
+                }
+            }
         }
-    }
-}
 
         return true;
     }
